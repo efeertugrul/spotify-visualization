@@ -27,11 +27,19 @@ def get_spotify_client():
     else:
         redirect_uri = st.secrets.get("REDIRECT_URI", "http://localhost:8501")
     
+    # Required scopes for audio features access
+    scope = [
+        "playlist-read-private",
+        "playlist-read-collaborative",
+        "user-read-private"
+    ]
+    
     sp_oauth = SpotifyOAuth(
         client_id=client_id,
         client_secret=client_secret,
         redirect_uri=redirect_uri,
-        scope="playlist-read-private playlist-read-collaborative"
+        scope=scope,
+        show_dialog=False
     )
     return sp_oauth
 
@@ -83,12 +91,17 @@ class Spotify_Tools:
     
     @staticmethod
     def track_feature(track_ids, sp):
-        """returns track audio features"""
+        """returns track audio features with retry logic"""
         features = []
         # Spotify API limit: 100 tracks per request
         for i in range(0, len(track_ids), 100):
             batch = track_ids[i:i+100]
-            features.extend(sp.audio_features(batch))
+            try:
+                batch_features = sp.audio_features(batch)
+                features.extend([f for f in batch_features if f is not None])
+            except spotipy.exceptions.SpotifyException as e:
+                st.warning(f"Could not fetch audio features for some tracks: {str(e)}")
+                continue
         return features
     
     @staticmethod
@@ -107,26 +120,33 @@ class Spotify_Tools:
         """Generate dataframe with all track features"""
         all_song_features = []
         progress_bar = st.progress(0)
+        status_text = st.empty()
         
         for idx, playlist in enumerate(playlists):
+            status_text.text(f"Processing: {playlist['title']} ({idx+1}/{len(playlists)})")
             try:
                 song_features = cls.track_feature(playlist['song_ids'], sp)
                 for song_feature in song_features:
                     if song_feature:
-                        name, artist, popularity = Spotify_Tools.track_info(song_feature['id'], sp)
-                        song_feature.update({
-                            'playlist': playlist['title'],
-                            'name': name,
-                            'artist': artist,
-                            'popularity': popularity
-                        })
-                        all_song_features.append(song_feature)
+                        try:
+                            name, artist, popularity = Spotify_Tools.track_info(song_feature['id'], sp)
+                            song_feature.update({
+                                'playlist': playlist['title'],
+                                'name': name,
+                                'artist': artist,
+                                'popularity': popularity
+                            })
+                            all_song_features.append(song_feature)
+                        except Exception as e:
+                            continue
             except Exception as e:
                 st.warning(f"Error processing playlist '{playlist['title']}': {str(e)}")
                 continue
             
             progress_bar.progress((idx + 1) / len(playlists))
         
+        status_text.empty()
+        progress_bar.empty()
         return pd.DataFrame(all_song_features) if all_song_features else pd.DataFrame()
 
 
@@ -187,16 +207,16 @@ def plot_radar_plotly(playlist_dfs, columns):
 
 
 # ==================== Streamlit App ====================
-st.title("🎵 Spotify Playlist Visualizer")
+st.title("Spotify Playlist Visualizer")
 st.markdown("Analyze and visualize your Spotify playlists with audio feature analysis.")
 
 # Get OAuth client
 sp_oauth = get_spotify_client()
 
 if not sp_oauth:
-    st.error("❌ Missing Spotify API credentials")
+    st.error("Missing Spotify API credentials")
     st.info("""
-    **Setup Required:**
+    Setup Required:
     1. Go to https://developer.spotify.com/dashboard
     2. Create a new app
     3. Add these credentials to Streamlit secrets:
@@ -211,10 +231,10 @@ else:
     
     # Show login button
     if 'code' not in query_params and 'token_info' not in st.session_state:
-        st.info("👋 Click the button below to login with your Spotify account")
+        st.info("Click the button below to login with your Spotify account")
         
         auth_url = sp_oauth.get_authorize_url()
-        st.markdown(f'<a href="{auth_url}" target="_blank"><button style="padding: 10px 20px; background-color: #1DB954; color: white; border: none; border-radius: 24px; cursor: pointer;">🎵 Login with Spotify</button></a>', unsafe_allow_html=True)
+        st.markdown(f'<a href="{auth_url}" target="_blank"><button style="padding: 10px 20px; background-color: #1DB954; color: white; border: none; border-radius: 24px; cursor: pointer;">Login with Spotify</button></a>', unsafe_allow_html=True)
     
     elif 'code' in query_params and 'token_info' not in st.session_state:
         # Exchange code for token
@@ -228,7 +248,10 @@ else:
                 st.query_params.clear()
                 st.rerun()
         except Exception as e:
-            st.error(f"❌ Authentication failed: {str(e)}")
+            st.error(f"Authentication failed: {str(e)}")
+            if st.button("Try Again"):
+                st.session_state.clear()
+                st.rerun()
     
     elif 'token_info' in st.session_state and st.session_state.get('authenticated'):
         # User is authenticated
@@ -238,15 +261,15 @@ else:
         # Get current user
         try:
             current_user = sp.current_user()
-            st.sidebar.success(f"✅ Logged in as {current_user['display_name']}")
-        except:
-            st.sidebar.warning("Session expired. Please login again.")
-            if st.sidebar.button("🔄 Login Again"):
+            st.sidebar.success(f"Logged in as {current_user['display_name']}")
+        except Exception as e:
+            st.sidebar.warning(f"Session expired. Error: {str(e)}")
+            if st.sidebar.button("Login Again"):
                 st.session_state.clear()
                 st.rerun()
         
         # Logout button
-        if st.sidebar.button("🔓 Logout"):
+        if st.sidebar.button("Logout"):
             st.session_state.clear()
             st.query_params.clear()
             st.rerun()
@@ -270,12 +293,12 @@ else:
         
         try:
             # Tab interface
-            tab1, tab2, tab3 = st.tabs(["📊 Analysis", "📈 Visualizations", "🎼 Playlist Data"])
+            tab1, tab2, tab3 = st.tabs(["Analysis", "Visualizations", "Playlist Data"])
             
             with tab1:
                 st.header("Playlist Audio Features Analysis")
                 
-                if st.button("🔄 Load Playlists", key="load_playlists"):
+                if st.button("Load Playlists", key="load_playlists"):
                     with st.spinner("Loading your playlists..."):
                         playlists = Spotify_Tools.user_to_playlists(sp)
                     
@@ -294,7 +317,9 @@ else:
                             
                             st.session_state['df'] = df
                             st.session_state['playlists'] = playlists
-                            st.success(f"✅ Total tracks analyzed: {len(df) - 2}")
+                            st.success(f"Total tracks analyzed: {len(df) - 2}")
+                        else:
+                            st.warning("No audio features could be extracted from your playlists.")
             
             if 'df' in st.session_state:
                 df = st.session_state['df']
@@ -305,7 +330,7 @@ else:
                 col1, col2 = st.columns(2)
                 
                 with col1:
-                    st.write("**Select a feature to analyze:**")
+                    st.write("Select a feature to analyze:")
                     selected_feature = st.selectbox("Feature", music_features)
                     
                     feature_stats = df[selected_feature].describe()
@@ -381,12 +406,12 @@ else:
                     # Download button
                     csv = playlist_data.to_csv(index=False)
                     st.download_button(
-                        label=f"📥 Download {selected_playlist} data as CSV",
+                        label=f"Download {selected_playlist} data as CSV",
                         data=csv,
                         file_name=f"{selected_playlist}.csv",
                         mime="text/csv"
                     )
         
         except Exception as e:
-            st.error(f"❌ Error: {str(e)}")
+            st.error(f"Error: {str(e)}")
             st.info("Please try logging in again or check your Spotify account settings.")
