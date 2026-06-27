@@ -9,6 +9,7 @@ import re
 from sklearn.preprocessing import MinMaxScaler
 import plotly.graph_objects as go
 import plotly.express as px
+import time
 
 st.set_page_config(page_title="Spotify Playlist Visualizer", layout="wide")
 
@@ -27,11 +28,12 @@ def get_spotify_client():
     else:
         redirect_uri = st.secrets.get("REDIRECT_URI", "http://localhost:8501")
     
-    # Required scopes for audio features access
+    # Required scopes for full access
     scope = [
         "playlist-read-private",
         "playlist-read-collaborative",
-        "user-read-private"
+        "user-read-private",
+        "user-read-email"
     ]
     
     sp_oauth = SpotifyOAuth(
@@ -39,9 +41,22 @@ def get_spotify_client():
         client_secret=client_secret,
         redirect_uri=redirect_uri,
         scope=scope,
-        show_dialog=False
+        show_dialog=False,
+        cache_path=None  # Don't cache to file, use session state instead
     )
     return sp_oauth
+
+def refresh_token_if_needed(sp):
+    """Check and refresh token if needed"""
+    try:
+        # Make a simple call to test token validity
+        sp.current_user()
+        return True
+    except spotipy.exceptions.SpotifyException as e:
+        if "401" in str(e) or "Unauthorized" in str(e):
+            # Token expired, need to re-authenticate
+            return False
+        return True
 
 # ==================== Spotify Tools Class ====================
 class Spotify_Tools:
@@ -49,7 +64,12 @@ class Spotify_Tools:
     @staticmethod
     def user_to_playlists(sp):
         """returns user's playlists as a list"""
-        u_playlists = sp.current_user_playlists()
+        try:
+            u_playlists = sp.current_user_playlists(limit=50)
+        except Exception as e:
+            st.error(f"Failed to load playlists: {str(e)}")
+            return []
+        
         playlists = []
         
         while u_playlists:
@@ -61,11 +81,14 @@ class Spotify_Tools:
                     if track_ids:
                         playlists.append({"title": name, "song_ids": track_ids})
                 except Exception as e:
-                    st.warning(f"Could not load playlist '{name}': {str(e)}")
+                    st.warning(f"Could not load playlist '{name}'")
                     continue
             
             if u_playlists['next']:
-                u_playlists = sp.next(u_playlists)
+                try:
+                    u_playlists = sp.next(u_playlists)
+                except:
+                    break
             else:
                 u_playlists = None
         
@@ -75,7 +98,11 @@ class Spotify_Tools:
     def playlist_to_track_ids(playlist_id, sp):
         """returns track ids in a playlist"""
         track_list = []
-        results = sp.playlist_items(playlist_id)
+        try:
+            results = sp.playlist_items(playlist_id, limit=100)
+        except Exception as e:
+            st.error(f"Failed to load playlist items: {str(e)}")
+            return []
         
         while results:
             for item in results['items']:
@@ -83,25 +110,58 @@ class Spotify_Tools:
                     track_list.append(item['track']['id'])
             
             if results['next']:
-                results = sp.next(results)
+                try:
+                    results = sp.next(results)
+                except:
+                    break
             else:
                 results = None
         
         return track_list
     
     @staticmethod
+    def track_feature_safe(track_id, sp):
+        """Safely get features for a single track"""
+        try:
+            features = sp.audio_features(track_id)
+            if features and features[0]:
+                return features[0]
+        except:
+            pass
+        return None
+    
+    @staticmethod
     def track_feature(track_ids, sp):
-        """returns track audio features with retry logic"""
+        """returns track audio features with robust error handling"""
         features = []
+        failed_count = 0
+        
         # Spotify API limit: 100 tracks per request
-        for i in range(0, len(track_ids), 100):
-            batch = track_ids[i:i+100]
+        for i in range(0, len(track_ids), 50):  # Reduced batch size for stability
+            batch = track_ids[i:i+50]
             try:
                 batch_features = sp.audio_features(batch)
                 features.extend([f for f in batch_features if f is not None])
+                time.sleep(0.1)  # Small delay between requests
             except spotipy.exceptions.SpotifyException as e:
-                st.warning(f"Could not fetch audio features for some tracks: {str(e)}")
-                continue
+                if "403" in str(e) or "429" in str(e):
+                    # Rate limited or forbidden - try individual requests
+                    for track_id in batch:
+                        try:
+                            feature = Spotify_Tools.track_feature_safe(track_id, sp)
+                            if feature:
+                                features.append(feature)
+                        except:
+                            failed_count += 1
+                        time.sleep(0.05)
+                else:
+                    failed_count += len(batch)
+            except Exception as e:
+                failed_count += len(batch)
+        
+        if failed_count > 0:
+            st.warning(f"Could not fetch audio features for {failed_count} tracks (rate limited or restricted)")
+        
         return features
     
     @staticmethod
@@ -126,6 +186,7 @@ class Spotify_Tools:
             status_text.text(f"Processing: {playlist['title']} ({idx+1}/{len(playlists)})")
             try:
                 song_features = cls.track_feature(playlist['song_ids'], sp)
+                
                 for song_feature in song_features:
                     if song_feature:
                         try:
@@ -137,10 +198,10 @@ class Spotify_Tools:
                                 'popularity': popularity
                             })
                             all_song_features.append(song_feature)
-                        except Exception as e:
+                        except:
                             continue
             except Exception as e:
-                st.warning(f"Error processing playlist '{playlist['title']}': {str(e)}")
+                st.warning(f"Error processing playlist '{playlist['title']}'")
                 continue
             
             progress_bar.progress((idx + 1) / len(playlists))
@@ -256,6 +317,18 @@ else:
     elif 'token_info' in st.session_state and st.session_state.get('authenticated'):
         # User is authenticated
         token_info = st.session_state['token_info']
+        
+        # Refresh token if expired
+        if token_info.get('expires_at') and token_info['expires_at'] < time.time():
+            try:
+                token_info = sp_oauth.refresh_access_token(token_info['refresh_token'])
+                st.session_state['token_info'] = token_info
+            except:
+                st.warning("Session expired. Please login again.")
+                if st.button("Login Again"):
+                    st.session_state.clear()
+                    st.rerun()
+        
         sp = spotipy.Spotify(auth=token_info['access_token'])
         
         # Get current user
@@ -263,7 +336,7 @@ else:
             current_user = sp.current_user()
             st.sidebar.success(f"Logged in as {current_user['display_name']}")
         except Exception as e:
-            st.sidebar.warning(f"Session expired. Error: {str(e)}")
+            st.sidebar.warning("Session expired. Please login again.")
             if st.sidebar.button("Login Again"):
                 st.session_state.clear()
                 st.rerun()
@@ -303,7 +376,7 @@ else:
                         playlists = Spotify_Tools.user_to_playlists(sp)
                     
                     if not playlists:
-                        st.warning("No playlists found.")
+                        st.warning("No playlists found. Make sure you have public playlists.")
                     else:
                         st.success(f"Found {len(playlists)} playlists")
                         
@@ -319,7 +392,7 @@ else:
                             st.session_state['playlists'] = playlists
                             st.success(f"Total tracks analyzed: {len(df) - 2}")
                         else:
-                            st.warning("No audio features could be extracted from your playlists.")
+                            st.warning("No audio features could be extracted. This may be due to API rate limiting.")
             
             if 'df' in st.session_state:
                 df = st.session_state['df']
@@ -414,4 +487,4 @@ else:
         
         except Exception as e:
             st.error(f"Error: {str(e)}")
-            st.info("Please try logging in again or check your Spotify account settings.")
+            st.info("Please try logging in again.")
