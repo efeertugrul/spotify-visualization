@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  spotify-visualizer:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      - SPOTIFY_CLIENT_ID=${SPOTIFY_CLIENT_ID}
+      - SPOTIFY_CLIENT_SECRET=${SPOTIFY_CLIENT_SECRET}
+      - SPOTIFY_USERNAME=${SPOTIFY_USERNAME}
+    volumes:
+      - .:/app
+    env_file:
+      - .env
