@@ -243,7 +243,7 @@ else:
         )
         try:
             with st.spinner("Authenticating..."):
-                token_info = sp_oauth.get_access_token(code, as_dict=False)
+                token_info = sp_oauth.get_access_token(code)
                 st.session_state["token_info"] = token_info
                 st.session_state["authenticated"] = True
                 st.query_params.clear()
