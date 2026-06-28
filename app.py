@@ -29,7 +29,6 @@ def get_spotify_client():
     else:
         redirect_uri = st.secrets.get("REDIRECT_URI", "http://localhost:8501")
 
-    # Added 'user-top-read' to access top artists & tracks
     scope = [
         "playlist-read-private",
         "playlist-read-collaborative",
@@ -141,7 +140,13 @@ class Spotify_Tools:
             results = sp.current_user_top_artists(time_range=time_range, limit=limit)
             artists = []
             for item in results.get("items", []):
-                artists.append({"id": item["id"], "name": item["name"]})
+                artists.append(
+                    {
+                        "id": item["id"],
+                        "name": item["name"],
+                        "image": (item["images"][0]["url"] if item["images"] else None),
+                    }
+                )
             return artists
         except Exception as e:
             st.error(f"Failed to fetch top artists: {str(e)}")
@@ -196,6 +201,16 @@ sp_oauth = get_spotify_client()
 
 if not sp_oauth:
     st.error("Missing Spotify API credentials")
+    st.info("""
+    Setup Required:
+    1. Go to https://developer.spotify.com/dashboard
+    2. Create a new app
+    3. Add these credentials to Streamlit secrets:
+       - SPOTIFY_CLIENT_ID
+       - SPOTIFY_CLIENT_SECRET
+       - REDIRECT_URI (e.g., https://your-app.streamlit.app)
+       - APP_URL (same as REDIRECT_URI)
+    """)
 else:
     query_params = st.query_params
 
@@ -222,6 +237,9 @@ else:
                 st.rerun()
         except Exception as e:
             st.error(f"Authentication failed: {str(e)}")
+            if st.button("Try Again"):
+                st.session_state.clear()
+                st.rerun()
 
     elif "token_info" in st.session_state and st.session_state.get("authenticated"):
         token_info = st.session_state["token_info"]
@@ -232,8 +250,26 @@ else:
                 st.session_state["token_info"] = token_info
             except:
                 st.warning("Session expired. Please login again.")
+                if st.button("Login Again"):
+                    st.session_state.clear()
+                    st.rerun()
 
         sp = spotipy.Spotify(auth=token_info["access_token"])
+
+        try:
+            current_user = sp.current_user()
+            st.sidebar.success(f"Logged in as {current_user['display_name']}")
+        except Exception as e:
+            st.sidebar.warning("Session expired. Please login again.")
+            if st.sidebar.button("Login Again"):
+                st.session_state.clear()
+                st.rerun()
+
+        # Logout button
+        if st.sidebar.button("Logout"):
+            st.session_state.clear()
+            st.query_params.clear()
+            st.rerun()
 
         # Layout UI Config
         tab1, tab2, tab3 = st.tabs(
