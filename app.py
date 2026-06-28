@@ -8,6 +8,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import spotipy
 import streamlit as st
+from spotipy.cache_handler import MemoryCacheHandler
 from spotipy.oauth2 import SpotifyOAuth
 
 st.set_page_config(page_title="Spotify Playlist Visualizer", layout="wide")
@@ -37,8 +38,14 @@ def get_spotify_client():
         "user-top-read",
     ]
 
-    cache_key = st.session_state.get("session_id", "default_session")
+    if "token_cache" not in st.session_state:
+        st.session_state["token_cache"] = {}
 
+    # cache_key = st.session_state.get("session_id", "default_session")
+
+    custom_cache_handler = MemoryCacheHandler(
+        token_info=st.session_state["token_cache"]
+    )
     sp_oauth = SpotifyOAuth(
         client_id=client_id,
         client_secret=client_secret,
@@ -46,7 +53,7 @@ def get_spotify_client():
         scope=scope,
         show_dialog=True,
         cache_path=None,
-        state=cache_key,
+        cache_handler=custom_cache_handler,
     )
     return sp_oauth
 
