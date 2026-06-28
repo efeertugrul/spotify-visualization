@@ -32,18 +32,21 @@ def get_spotify_client():
     scope = [
         "playlist-read-private",
         "playlist-read-collaborative",
-        "user-read-private",
-        "user-read-email",
+        # "user-read-private",
+        # "user-read-email",
         "user-top-read",
     ]
+
+    cache_key = st.session_state.get("session_id", "default_session")
 
     sp_oauth = SpotifyOAuth(
         client_id=client_id,
         client_secret=client_secret,
         redirect_uri=redirect_uri,
         scope=scope,
-        show_dialog=False,
+        show_dialog=True,
         cache_path=None,
+        state=cache_key,
     )
     return sp_oauth
 
@@ -192,6 +195,9 @@ class Spotify_Tools:
 
 
 # ==================== Streamlit App ====================
+if "session_id" not in st.session_state:
+    st.session_state["session_id"] = str(time.time())
+
 st.title("Spotify Playlist Visualizer")
 st.markdown(
     "Analyze how well your favorite top artists are represented across your playlists."
